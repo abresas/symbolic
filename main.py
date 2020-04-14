@@ -276,7 +276,3 @@ def derive(expr: Expression, var: Variable) -> Expression:
         if isinstance(expr.exponent, Constant) and isinstance(expr.base, Variable) and expr.base == var:
             return expr.exponent * expr.base ** Constant(expr.exponent.value - 1)
     raise Exception('Derivation not implemented for: ' + str(expr))
-
-x = Variable('x')
-print(x)
-print(2 * x ** 3 + 3 * x ** 2 + 4)
