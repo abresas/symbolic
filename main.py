@@ -1,7 +1,7 @@
 import math
 from dataclasses import dataclass
-from typing import Any
-
+from typing import Any, List
+from itertools import groupby
 
 class Expression:
     def simplify(self):
@@ -170,12 +170,6 @@ class Multiply(Expression):
         3 * x
         >>> print(((3 * (x ** -1)) * (x ** 2)).simplify())
         3 * x
-
-        * (a ** e1) * (b ** e2) * (a ** e3) * (d ** e4)
-        -> (a ** (e1 + e3)) * (b ** e2) * (d ** e4)
-
-        Multiply((a ** e1), Multiply(b ** e2, (a ** e3, Multiply(d ** e4, a ** e6)))
-        -> Multiply(a ** e1 + e2 + e6, ...)
         """
         left = self.left.simplify()
         right = self.right.simplify()
@@ -197,7 +191,16 @@ class Multiply(Expression):
             return Minus(Multiply(left, right.value).simplify())
         if isinstance(right, Power) and isinstance(left, Power) and (right.base == left.base):
             return (right.base ** (right.exponent + left.exponent)).simplify()
+        """
+        if isinstance(right, Multiply) or isinstance(left, Multiply): 
+            factors = self.get_factors() # -> a ** e1 * b ** e2 * a ** e3 * ... -> [(a, e1), (b, e2), (a, e3), ...]
+            factors = multiply_group_factors(factors) # -> [(a, (e1+e3)), (b, e2), ...]
+            return multiply_from_factors(factors).simplify() # -> a ** (e1+e3) * b ** e2 * ...
+        """
         return Multiply(left, right)
+
+    def get_factors(self) -> List['Power']:
+        return get_multiplication_factors(self.right) + get_multiplication_factors(self.left)
 
     def __repr__(self):
         """
@@ -407,3 +410,25 @@ def derive(expr: Expression, var: Variable) -> Expression:
             return ((expr.base.value ** expr.exponent) * Logarithm(expr.base)).simplify()
         """
     raise Exception('Derivation not implemented for: ' + str(expr))
+
+def get_multiplication_factors(expr: Expression) -> List[Power]:
+    if isinstance(expr, Multiply):
+        return expr.get_factors()
+    elif isinstance(expr, Power):
+        return [expr]
+    else:
+        return [Power(expr, Constant(1))]
+
+def group_multiplication_factors(factors: List[Power]) -> List[Power]:
+    """
+    >>> group_multiplication_factors([Power(3, 1), Power(2, 2), Power(3, 2)])
+    [2 ** 2, 3 ** 3]
+    """
+    factors = sorted(factors, key=lambda f: f.base)
+    grouped_factors = []
+    for base, fs in groupby(factors, lambda f: f.base):
+        p = Power(base, 0)
+        for f in fs:
+            p.exponent += f.exponent
+        grouped_factors.append(p)
+    return grouped_factors
