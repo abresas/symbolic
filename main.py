@@ -1,7 +1,7 @@
 import math
 from dataclasses import dataclass
-from typing import Any, List
-from itertools import groupby
+from typing import Any, List, TypeVar, Callable, Iterable, Tuple
+from collections import defaultdict
 
 class Expression:
     def simplify(self):
@@ -97,6 +97,12 @@ class Expression:
             other = Constant(other)
         return Power(other, self)
 
+    def __hash__(self):
+        return hash(str(self))
+
+    def __eq__(self, other):
+        return str(self) == str(other)
+
 @dataclass
 class Constant(Expression):
     value: Any
@@ -152,6 +158,8 @@ class Multiply(Expression):
     def simplify(self):
         """
         >>> x = Variable('x')
+        >>> print(((3 * (x ** -1)) * (x ** 2)).simplify())
+        3 * x
         >>> print((1 * x).simplify())
         x
         >>> print((x * 1).simplify())
@@ -167,8 +175,6 @@ class Multiply(Expression):
         >>> print(((x ** -1) * (x ** 2)).simplify())
         x
         >>> print((3 * ((x ** -1) * (x ** 2))).simplify())
-        3 * x
-        >>> print(((3 * (x ** -1)) * (x ** 2)).simplify())
         3 * x
         """
         left = self.left.simplify()
@@ -191,13 +197,7 @@ class Multiply(Expression):
             return Minus(Multiply(left, right.value).simplify())
         if isinstance(right, Power) and isinstance(left, Power) and (right.base == left.base):
             return (right.base ** (right.exponent + left.exponent)).simplify()
-        """
-        if isinstance(right, Multiply) or isinstance(left, Multiply): 
-            factors = self.get_factors() # -> a ** e1 * b ** e2 * a ** e3 * ... -> [(a, e1), (b, e2), (a, e3), ...]
-            factors = multiply_group_factors(factors) # -> [(a, (e1+e3)), (b, e2), ...]
-            return multiply_from_factors(factors).simplify() # -> a ** (e1+e3) * b ** e2 * ...
-        """
-        return Multiply(left, right)
+        return group_multiplication_factors(Multiply(left, right))
 
     def get_factors(self) -> List['Power']:
         return get_multiplication_factors(self.right) + get_multiplication_factors(self.left)
@@ -207,8 +207,18 @@ class Multiply(Expression):
         >>> x = Variable('x')
         >>> print(Multiply(Constant(2), x))
         2 * x
+        >>> print(x * (x + 1))
+        x * (x + 1)
         """
-        return f'{self.left} * {self.right}'
+        if isinstance(self.right, Add) or isinstance(self.right, Subtract):
+            right = '(' + str(self.right) + ')'
+        else:
+            right = str(self.right)
+        if isinstance(self.left, Add) or isinstance(self.left, Subtract):
+            left = '(' + str(self.left) + ')'
+        else:
+            left = str(self.left)
+        return f'{left} * {right}'
 
 @dataclass
 class Add(Expression):
@@ -341,6 +351,8 @@ class Power(Expression):
         exponent = self.exponent.simplify()
         if isinstance(base, Constant) and isinstance(exponent, Constant):
             return Constant(base.value ** exponent.value)
+        if isinstance(exponent, Constant) and exponent == 0:
+            return Constant(1)
         if isinstance(exponent, Constant) and exponent == 1:
             return base
         return Power(base, exponent)
@@ -374,13 +386,15 @@ def derive(expr: Expression, var: Variable) -> Expression:
     >>> derive(x / 2, x)
     1 / 2.0
     >>> derive(2 / x, x)
-    - 2 / x ** 2
+    -2 * x ** -2
     >>> derive(x ** 3, x)
     3 * x ** 2
     >>> derive(3 ** x, x)
-    3 ** x * ln(3)
+    ln(3) * 3 ** x
     >>> derive(e ** x, x)
     e ** x
+    >>> derive(x ** x, x)
+    (ln(x) + 1) * x ** x
     """
 
     expr = expr.simplify()
@@ -403,12 +417,6 @@ def derive(expr: Expression, var: Variable) -> Expression:
         return ((1 / expr.value) * derive(expr.value, var)).simplify()
     if isinstance(expr, Power):
         return (derive(expr.exponent * Logarithm(expr.base), var) * expr).simplify()
-        """
-        if isinstance(expr.exponent, Constant) and isinstance(expr.base, Variable) and expr.base == var:
-            return (expr.exponent * expr.base ** Constant(expr.exponent.value - 1)).simplify()
-        if isinstance(expr.base, Constant) and isinstance(expr.exponent, Variable) and expr.exponent == var:
-            return ((expr.base.value ** expr.exponent) * Logarithm(expr.base)).simplify()
-        """
     raise Exception('Derivation not implemented for: ' + str(expr))
 
 def get_multiplication_factors(expr: Expression) -> List[Power]:
@@ -419,16 +427,35 @@ def get_multiplication_factors(expr: Expression) -> List[Power]:
     else:
         return [Power(expr, Constant(1))]
 
-def group_multiplication_factors(factors: List[Power]) -> List[Power]:
+T = TypeVar('T')
+K = TypeVar('K')
+def groupby(l: List[T], f: Callable[[T], K]) -> Iterable[Tuple[K, List[T]]]:
+    d = defaultdict(list)
+    for x in l:
+        k = f(x)
+        d[str(k)].append(x)
+    return d.items()
+
+def group_multiplication_factors(expr: Multiply) -> Expression:
     """
-    >>> group_multiplication_factors([Power(3, 1), Power(2, 2), Power(3, 2)])
-    [2 ** 2, 3 ** 3]
+    >>> x = Variable('x')
+    >>> group_multiplication_factors(x ** (-1) * (Constant(2) ** 2) * x ** 3)
+    4 * x ** 2
+    >>> group_multiplication_factors(Constant(3) ** 1 * (Constant(2) ** 2) * Constant(3) ** 2)
+    108
     """
-    factors = sorted(factors, key=lambda f: f.base)
-    grouped_factors = []
-    for base, fs in groupby(factors, lambda f: f.base):
-        p = Power(base, 0)
+    starting_factors = expr.get_factors()
+    result = Constant(1)
+    num_factors = 0
+    for _, fs in groupby(starting_factors, lambda f: f.base):
+        num_factors += 1
+        exponent = Constant(0)
         for f in fs:
-            p.exponent += f.exponent
-        grouped_factors.append(p)
-    return grouped_factors
+            exponent += f.exponent
+        p = Power(fs[0].base, exponent.simplify())
+        result = result * p
+    if num_factors < len(starting_factors):
+        return result.simplify()
+    else:
+        # avoid infinite recursion
+        return expr
